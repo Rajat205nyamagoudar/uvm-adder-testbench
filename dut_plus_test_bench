@@ -1,0 +1,213 @@
+
+ ////////dut//////////////////
+module full_adder(input [3:0] a, b, output [4:0] y);
+  assign y = a + b;
+endmodule
+///interface//////////
+interface full_adder_if;
+  logic [3:0] a, b;
+  logic [4:0] y;
+endinterface
+//////////////////
+class transaction extends uvm_sequence_item;
+  rand bit [3:0] a;
+  rand bit [3:0] b;
+  bit [4:0] y;
+ 
+  function new(string path = "transaction");
+    super.new(path);
+  endfunction
+ 
+  `uvm_object_utils_begin(transaction)
+    `uvm_field_int(a, UVM_DEFAULT)
+    `uvm_field_int(b, UVM_DEFAULT)
+    `uvm_field_int(y, UVM_DEFAULT)
+  `uvm_object_utils_end
+endclass
+ 
+//////////////// 
+class generator extends uvm_sequence #(transaction);
+  `uvm_object_utils(generator)
+ 
+  function new(string path = "generator");
+    super.new(path);
+  endfunction
+ 
+  virtual task body();
+    repeat (5) begin
+      transaction t = transaction::type_id::create("t");
+      start_item(t);
+      assert(t.randomize());
+      `uvm_info("GEN", $sformatf("a : %0d and b : %0d", t.a, t.b), UVM_NONE)
+      finish_item(t);
+    end
+  endtask
+endclass
+ 
+//////////////// 
+class driver extends uvm_driver #(transaction);
+  `uvm_component_utils(driver)
+ 
+  transaction t;
+  virtual full_adder_if fh;
+ 
+  function new(string path = "driver", uvm_component parent = null);
+    super.new(path, parent);
+  endfunction
+ 
+  virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    if (!uvm_config_db #(virtual full_adder_if)::get(this, "", "fh", fh))
+      `uvm_fatal("DRV", "Unable to get interface fh")
+  endfunction
+ 
+  virtual task run_phase(uvm_phase phase);
+    forever begin
+      seq_item_port.get_next_item(t);
+      fh.a <= t.a;
+      fh.b <= t.b;
+      `uvm_info("DRV", $sformatf("Trigger DUT a: %0d b: %0d", t.a, t.b), UVM_NONE)
+      seq_item_port.item_done();
+      #10;
+    end
+  endtask
+endclass
+ 
+//////////////// 
+class monitor extends uvm_monitor;
+  `uvm_component_utils(monitor)
+ 
+  uvm_analysis_port #(transaction) send;
+  virtual full_adder_if fh;
+ 
+  function new(string path = "monitor", uvm_component parent = null);
+    super.new(path, parent);
+    send = new("send", this);
+  endfunction
+ 
+  virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    if (!uvm_config_db #(virtual full_adder_if)::get(this, "", "fh", fh))
+      `uvm_fatal("MON", "Unable to get interface fh")
+  endfunction
+ 
+  virtual task run_phase(uvm_phase phase);
+    forever begin
+      transaction t = transaction::type_id::create("t");
+      #10;
+      t.a = fh.a;
+      t.b = fh.b;
+      t.y = fh.y;
+      send.write(t);
+    end
+  endtask
+endclass
+ 
+//////////////// 
+class scoreboard extends uvm_scoreboard;
+  `uvm_component_utils(scoreboard)
+ 
+  uvm_analysis_imp #(transaction, scoreboard) recv;
+ 
+  function new(string path = "scoreboard", uvm_component parent = null);
+    super.new(path, parent);
+    recv = new("recv", this);
+  endfunction
+ 
+  virtual function void write(input transaction t);
+    if (t.y == t.a + t.b)
+      `uvm_info("SCO", $sformatf("PASS a:%0d b:%0d y:%0d", t.a, t.b, t.y), UVM_NONE)
+    else
+      `uvm_error("SCO", $sformatf("FAIL a:%0d b:%0d y:%0d", t.a, t.b, t.y))
+  endfunction
+endclass
+ 
+//////////////// 
+class agent extends uvm_agent;
+  `uvm_component_utils(agent)
+ 
+  driver d;
+  monitor m;
+  uvm_sequencer #(transaction) seq;
+ 
+  function new(string path = "agent", uvm_component parent = null);
+    super.new(path, parent);
+  endfunction
+ 
+  virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    d   = driver::type_id::create("d", this);
+    m   = monitor::type_id::create("m", this);
+    seq = uvm_sequencer #(transaction)::type_id::create("seq", this);
+  endfunction
+ 
+  virtual function void connect_phase(uvm_phase phase);
+    super.connect_phase(phase);
+    d.seq_item_port.connect(seq.seq_item_export);
+  endfunction
+endclass
+ 
+//////////////// 
+class env extends uvm_env;
+  `uvm_component_utils(env)
+ 
+  agent a;
+  scoreboard sb;
+ 
+  function new(string path = "env", uvm_component parent = null);
+    super.new(path, parent);
+  endfunction
+ 
+  virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    a  = agent::type_id::create("a", this);
+    sb = scoreboard::type_id::create("sb", this);
+  endfunction
+ 
+  virtual function void connect_phase(uvm_phase phase);
+    super.connect_phase(phase);
+    a.m.send.connect(sb.recv);
+  endfunction
+endclass
+ 
+//////////////// 
+class test extends uvm_test;
+  `uvm_component_utils(test)
+ 
+  env e;
+  generator g;
+ 
+  function new(string path = "test", uvm_component parent = null);
+    super.new(path, parent);
+  endfunction
+ 
+  virtual function void build_phase(uvm_phase phase);
+    super.build_phase(phase);
+    e = env::type_id::create("e", this);
+    g = generator::type_id::create("g");   
+  endfunction
+ 
+  virtual task run_phase(uvm_phase phase);
+    phase.raise_objection(this);
+    g.start(e.a.seq);
+    #50;                                  
+    phase.drop_objection(this);
+  endtask
+endclass
+ 
+module tb;
+  full_adder_if fh();
+  full_adder dut(.a(fh.a), .b(fh.b), .y(fh.y));
+ 
+  initial begin
+    $dumpfile("dump.vcd");
+    $dumpvars;
+  end
+ 
+  initial begin
+    uvm_config_db #(virtual full_adder_if)::set(null, "uvm_test_top.e.a*", "fh", fh);
+    run_test("test");
+  end
+endmodule
+ 
+ 
